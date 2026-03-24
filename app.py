@@ -22,7 +22,7 @@ class Config:
     """Application configuration pulled from environment variables."""
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
     if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY must be provided via environment")
+        logger.warning("GROQ_API_KEY not set, app may not function properly")
     MODEL_NAME: str = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
     MAX_CONTENT_LENGTH: int = int(os.getenv("MAX_CONTENT_LENGTH", 10 * 1024 * 1024))  # 10 MB default
     ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")  # comma-separated list
@@ -431,7 +431,7 @@ def root():
 
 if __name__ == '__main__':
     # only start the built-in server when running this file directly
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 5000))
     debug = os.getenv("FLASK_ENV", "production") != "production"
     logger.info(f"Starting local Flask server (debug={debug}) on port {port}")
     app.run(debug=debug, host="0.0.0.0", port=port) 
