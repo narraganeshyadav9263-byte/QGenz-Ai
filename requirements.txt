@@ -9,5 +9,7 @@ python-docx==0.8.11
 spacy==3.7.2
 python-dotenv==1.0.0
 gunicorn==21.2.0
+groq==0.9.0
+httpx==0.27.0
 spacy
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
