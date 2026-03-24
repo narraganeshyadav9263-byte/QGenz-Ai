@@ -425,6 +425,10 @@ def generate_questions_api():
 def health_check():
     return jsonify({'status': 'healthy', 'timestamp': time.time()})
 
+@app.route('/', methods=['GET', 'HEAD'])
+def root():
+    return 'OK'
+
 if __name__ == '__main__':
     # only start the built-in server when running this file directly
     port = int(os.getenv("PORT", 8000))
