@@ -3,6 +3,7 @@ import asyncio
 import io
 import re
 import time
+import math
 import logging
 from pathlib import Path
 from typing import List, Dict, Any
@@ -18,23 +19,29 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 load_dotenv()  # load environment variables from .env if present
 
+# Configure logging first so Config can use logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 class Config:
     """Application configuration pulled from environment variables."""
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
     if not GROQ_API_KEY:
         logger.warning("GROQ_API_KEY not set, app may not function properly")
     MODEL_NAME: str = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
-    MAX_CONTENT_LENGTH: int = int(os.getenv("MAX_CONTENT_LENGTH", 10 * 1024 * 1024))  # 10 MB default
+    MAX_CONTENT_LENGTH: int = int(os.getenv("MAX_CONTENT_LENGTH", 10 * 1024 * 1024))  # 10 MB default
     ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")  # comma-separated list
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
     TMP_DIR: str = os.getenv("TMP_DIR", "temp_uploads")
 
-# Configure logging with timestamp and level from config
+# Re-configure logging with level from config
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s"
 )
-logger = logging.getLogger(__name__)
 
 # create Flask app and load config
 app = Flask(__name__)
@@ -250,11 +257,11 @@ async def async_generate_questions(prompt, resume_text, role, question_type, dif
 
     logger.error(f"Failed to generate {count} questions for {skill} after 3 attempts.")
     if question_type == "technical":
-        return [f"What is a basic concept in {skill}?", f"How would you use {skill} in a project?", f"What challenges might you face with {skill}?"]
+        return [f"What is a basic concept in {skill}?", f"How would you use {skill} in a project?", f"What challenges might you face with {skill}?"][:count]
     elif question_type == "behavioral":
-        return [f"How have you demonstrated {skill} in a team?", f"Describe a time you used {skill} to solve a problem?", f"How do you improve your {skill} skills?"]
+        return [f"How have you demonstrated {skill} in a team?", f"Describe a time you used {skill} to solve a problem?", f"How do you improve your {skill} skills?"][:count]
     else:
-        return [f"Imagine a scenario where you need to apply {skill}. What would you do?", f"How would you handle a {skill}-related issue?", f"What steps would you take using {skill} in a crisis?"]
+        return [f"Imagine a scenario where you need to apply {skill}. What would you do?", f"How would you handle a {skill}-related issue?", f"What steps would you take using {skill} in a crisis?"][:count]
 
 async def generate_questions_concurrent(tasks):
     start_time = time.time()
@@ -275,53 +282,61 @@ async def process_questions(resume_text, role, question_type, difficulty_level, 
         skills = ["Python"]
         traits = ["teamwork", "problem solving"]
 
-    # Generate questions based on type
     if question_type == "technical":
-        tasks = []
-        for skill in skills:
-            if validate_skill(skill):
-                task = async_generate_questions(
-                    "", resume_text, role, "technical", difficulty_level, skill, num_questions
-                )
-                tasks.append(task)
-        
+        valid_skills = [s for s in skills if validate_skill(s)]
+        # Distribute budget across skills so total equals num_questions
+        per_skill = math.ceil(num_questions / len(valid_skills)) if valid_skills else num_questions
+        tasks = [
+            async_generate_questions("", resume_text, role, "technical", difficulty_level, skill, per_skill)
+            for skill in valid_skills
+        ]
         if tasks:
             results = await generate_questions_concurrent(tasks)
-            for i, skill in enumerate(skills):
+            collected = []
+            for i, skill in enumerate(valid_skills):
                 if i < len(results) and isinstance(results[i], list):
                     response['technical_questions'][skill] = results[i]
-                    all_questions.update(results[i])
+                    collected.extend(results[i])
+            # Deduplicate and hard-trim to exact num_questions
+            trimmed = list(dict.fromkeys(collected))[:num_questions]
+            all_questions.update(trimmed)
 
     elif question_type == "behavioral":
-        tasks = []
-        for trait in traits:
-            task = async_generate_questions(
-                "", resume_text, role, "behavioral", difficulty_level, trait, num_questions
-            )
-            tasks.append(task)
-        
+        # Distribute budget across traits so total equals num_questions
+        per_trait = math.ceil(num_questions / len(traits)) if traits else num_questions
+        tasks = [
+            async_generate_questions("", resume_text, role, "behavioral", difficulty_level, trait, per_trait)
+            for trait in traits
+        ]
         if tasks:
             results = await generate_questions_concurrent(tasks)
+            collected = []
             for i, trait in enumerate(traits):
                 if i < len(results) and isinstance(results[i], list):
                     response['behavioral_questions'][trait] = results[i]
-                    all_questions.update(results[i])
+                    collected.extend(results[i])
+            # Deduplicate and hard-trim to exact num_questions
+            trimmed = list(dict.fromkeys(collected))[:num_questions]
+            all_questions.update(trimmed)
 
     elif question_type == "scenario":
-        tasks = []
-        for skill in skills:
-            if validate_skill(skill):
-                task = async_generate_questions(
-                    "", resume_text, role, "scenario", difficulty_level, skill, num_questions
-                )
-                tasks.append(task)
-        
+        valid_skills = [s for s in skills if validate_skill(s)]
+        # Distribute budget across skills so total equals num_questions
+        per_skill = math.ceil(num_questions / len(valid_skills)) if valid_skills else num_questions
+        tasks = [
+            async_generate_questions("", resume_text, role, "scenario", difficulty_level, skill, per_skill)
+            for skill in valid_skills
+        ]
         if tasks:
             results = await generate_questions_concurrent(tasks)
+            collected = []
             for result in results:
                 if isinstance(result, list):
-                    response['scenario_questions'].extend(result)
-                    all_questions.update(result)
+                    collected.extend(result)
+            # Deduplicate and hard-trim to exact num_questions
+            trimmed = list(dict.fromkeys(collected))[:num_questions]
+            response['scenario_questions'] = trimmed
+            all_questions.update(trimmed)
 
     logger.info(f"Generated {len(all_questions)} total questions in {time.time() - start_time:.2f}s")
     return response
@@ -354,14 +369,14 @@ def generate_questions_api():
     try:
         start_time = time.time()
         logger.info("Received question generation request")
-        
+
         if 'resume' not in request.files:
             return jsonify({'error': 'No resume file provided'}), 400
-        
+
         resume_file = request.files['resume']
         if resume_file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
-        
+
         # Get form data
         role = request.form.get('role', 'technical')
         question_type = request.form.get('questionType', 'technical')
@@ -369,32 +384,32 @@ def generate_questions_api():
         company = request.form.get('company', '')
         job_title = request.form.get('jobTitle', '')
         num_questions = int(request.form.get('numQuestions', 3))
-        
+
         # Validate file type
         allowed_extensions = {'.pdf', '.docx'}
         file_ext = Path(resume_file.filename).suffix.lower()
         if file_ext not in allowed_extensions:
             return jsonify({'error': f'Unsupported file type. Please use {", ".join(allowed_extensions)}'}), 400
-        
+
         # Save uploaded file temporarily
-        temp_dir = Path("temp_uploads")
+        temp_dir = Path(Config.TMP_DIR)
         temp_dir.mkdir(exist_ok=True)
         temp_file_path = temp_dir / f"resume_{int(time.time())}{file_ext}"
-        
+
         try:
             resume_file.save(str(temp_file_path))
             logger.info(f"Saved uploaded file to {temp_file_path}")
-            
+
             # Extract text from resume
             resume_text = extract_text(str(temp_file_path))
             logger.info(f"Extracted {len(resume_text)} characters from resume")
-            
+
             # Extract skills and traits
             skills = extract_technical_skills(resume_text)
             traits = extract_behavioral_traits(resume_text)
             logger.info(f"Extracted skills: {skills}, traits: {traits}")
-            
-                    # Generate questions using a fresh event loop
+
+            # Generate questions using a fresh event loop
             try:
                 questions_response = asyncio.run(
                     process_questions(resume_text, role, question_type, difficulty_level, company, job_title, skills, traits, num_questions)
@@ -402,9 +417,9 @@ def generate_questions_api():
             except Exception as e:
                 logger.error(f"Async generation failed: {e}")
                 raise
-            
+
             logger.info(f"Generated questions in {time.time() - start_time:.2f}s")
-            
+
             return jsonify({
                 'success': True,
                 'questions': questions_response,
@@ -412,11 +427,11 @@ def generate_questions_api():
                 'extracted_traits': traits,
                 'processing_time': f"{time.time() - start_time:.2f}s"
             })
-            
+
         finally:
             # Clean up temporary file
             safe_unlink(temp_file_path)
-            
+
     except Exception as e:
         logger.error(f"Error in generate_questions_api: {str(e)}")
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
@@ -434,4 +449,4 @@ if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
     debug = os.getenv("FLASK_ENV", "production") != "production"
     logger.info(f"Starting local Flask server (debug={debug}) on port {port}")
-    app.run(debug=debug, host="0.0.0.0", port=port) 
+    app.run(debug=debug, host="0.0.0.0", port=port)
